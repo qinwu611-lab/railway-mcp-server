@@ -1,10 +1,12 @@
-# 🚂 Railway MCP Server
+# Railway MCP Server
 
-Deploy on Railway. Point your MCP client at the URL.
+Deploy on Railway directly. Connect via URL.
 
-## Env
+## Environment Variables
 - `RAILWAY_API_TOKEN` - required
-- `PORT` - optional, default 8080
 
-## Tools
-- projects / services / deployments / env vars / logs / domains
+## Deploy
+1. New Project → Deploy from GitHub repo
+2. Add env var `RAILWAY_API_TOKEN`
+3. Deploy
+4. Use the `*.railway.app` URL in your MCP client

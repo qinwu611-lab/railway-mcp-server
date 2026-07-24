@@ -1,4 +1,3 @@
-from fastapi import FastAPI
 from fastmcp import FastMCP
 import httpx
 import os
@@ -159,21 +158,6 @@ async def railway_project_check(project_id: str):
     return await gql(q, {"id": project_id})
 
 
-# ─── FastAPI 包装 ───
-
-app = FastAPI(title="Railway MCP Server")
-
-@app.get("/health")
-async def health():
-    return {"status": "ok", "service": "railway-mcp"}
-
-@app.get("/")
-async def root():
-    return {"service": "railway-mcp", "status": "running"}
-
-app.mount("/", mcp.sse_app())
-
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    mcp.run(transport="http", host="0.0.0.0", port=port)
