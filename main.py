@@ -1,3 +1,4 @@
+from fastapi import FastAPI
 from fastmcp import FastMCP
 import httpx
 import os
@@ -80,13 +81,13 @@ async def railway_deployment_logs(deployment_id: str, limit: int = 50):
 
 @mcp.tool()
 async def railway_deployment_redeploy(deployment_id: str):
-    """重新部署（基于指定部署ID重新触发部署）"""
+    """重新部署"""
     q = """mutation($id: String!) { deploymentRedeploy(id: $id) { id status } }"""
     return await gql(q, {"id": deployment_id})
 
 @mcp.tool()
 async def railway_deployment_cancel(deployment_id: str):
-    """取消正在进行的部署"""
+    """取消部署"""
     q = """mutation($id: String!) { deploymentCancel(id: $id) { id status } }"""
     return await gql(q, {"id": deployment_id})
 
@@ -116,7 +117,7 @@ async def railway_variable_delete(service_id: str, variable_id: str):
 
 @mcp.tool()
 async def railway_environments_list(project_id: str):
-    """列出项目的所有环境（production, preview等）"""
+    """列出项目的所有环境"""
     q = """query($id: String!) { project(id: $id) { environments { edges { node { id name } } } } }"""
     return await gql(q, {"id": project_id})
 
@@ -144,11 +145,11 @@ async def railway_workspaces_list():
     q = """{ me { workspaces { edges { node { id name } } } } }"""
     return await gql(q)
 
-# ─── 主动查岗（特殊） ───
+# ─── 查岗 ───
 
 @mcp.tool()
 async def railway_project_check(project_id: str):
-    """快速查看项目状态：成员、服务数和最新部署"""
+    """快速查看项目状态"""
     q = """query($id: String!) {
         project(id: $id) {
             id name
@@ -158,5 +159,21 @@ async def railway_project_check(project_id: str):
     return await gql(q, {"id": project_id})
 
 
+# ─── FastAPI 包装 ───
+
+app = FastAPI(title="Railway MCP Server")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": "railway-mcp"}
+
+@app.get("/")
+async def root():
+    return {"service": "railway-mcp", "status": "running"}
+
+app.mount("/", mcp.sse_app())
+
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    port = int(os.getenv("PORT", "8080"))
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=port)
