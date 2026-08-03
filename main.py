@@ -20,6 +20,27 @@ async def gql(query: str, variables: dict = None) -> dict:
             raise Exception(f"Railway API error: {data['errors']}")
         return data.get("data", {})
 
+async def _service_project(service_id: str) -> str:
+    q = """query($id: String!) { service(id: $id) { projectId } }"""
+    data = await gql(q, {"id": service_id})
+    return data["service"]["projectId"]
+
+async def _resolve_env(project_id: str) -> str:
+    q = """query($id: String!) { project(id: $id) { environments { edges { node { id name } } } } }"""
+    data = await gql(q, {"id": project_id})
+    envs = data["project"]["environments"]["edges"]
+    if not envs:
+        raise Exception("project has no environments")
+    for e in envs:
+        if e["node"]["name"] == "production":
+            return e["node"]["id"]
+    return envs[0]["node"]["id"]
+
+async def _service_env(service_id: str):
+    pid = await _service_project(service_id)
+    eid = await _resolve_env(pid)
+    return pid, eid
+
 # ─── 项目 ───
 
 @mcp.tool()
@@ -45,24 +66,30 @@ async def railway_services_list(project_id: str):
 @mcp.tool()
 async def railway_service_get(service_id: str):
     """获取服务的详细信息"""
-    q = """query($id: String!) { service(id: $id) { id name createdAt } }"""
+    q = """query($id: String!) { service(id: $id) { id name projectId createdAt } }"""
     return await gql(q, {"id": service_id})
 
 @mcp.tool()
 async def railway_service_restart(service_id: str):
-    """重启指定服务"""
-    q = """mutation($id: String!) { serviceRestart(id: $id) { id } }"""
-    return await gql(q, {"id": service_id})
+    """重启指定服务（对服务做一次重新部署）"""
+    pid, eid = await _service_env(service_id)
+    q = """mutation($serviceId: String!, $environmentId: String!) {
+        serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
+    }"""
+    return await gql(q, {"serviceId": service_id, "environmentId": eid})
 
 # ─── 部署 ───
 
 @mcp.tool()
 async def railway_deployment_list(service_id: str, limit: int = 10):
     """列出服务的最新部署记录"""
-    q = """query($id: String!, $first: Int!) {
-        service(id: $id) { deployments(first: $first) { edges { node { id status createdAt } } } }
+    pid, eid = await _service_env(service_id)
+    q = """query($serviceId: String!, $environmentId: String!, $first: Int) {
+        deployments(input: { serviceId: $serviceId, environmentId: $environmentId }, first: $first) {
+            edges { node { id status createdAt } }
+        }
     }"""
-    return await gql(q, {"id": service_id, "first": limit})
+    return await gql(q, {"serviceId": service_id, "environmentId": eid, "first": limit})
 
 @mcp.tool()
 async def railway_deployment_get(deployment_id: str):
@@ -73,8 +100,8 @@ async def railway_deployment_get(deployment_id: str):
 @mcp.tool()
 async def railway_deployment_logs(deployment_id: str, limit: int = 50):
     """获取部署日志"""
-    q = """query($id: String!, $first: Int!) {
-        deployment(id: $id) { logs(first: $first) { edges { node { message timestamp } } } }
+    q = """query($id: String!, $first: Int) {
+        deploymentLogs(deploymentId: $id, limit: $first) { message timestamp severity }
     }"""
     return await gql(q, {"id": deployment_id, "first": limit})
 
@@ -87,7 +114,7 @@ async def railway_deployment_redeploy(deployment_id: str):
 @mcp.tool()
 async def railway_deployment_cancel(deployment_id: str):
     """取消部署"""
-    q = """mutation($id: String!) { deploymentCancel(id: $id) { id status } }"""
+    q = """mutation($id: String!) { deploymentCancel(id: $id) }"""
     return await gql(q, {"id": deployment_id})
 
 # ─── 环境变量 ───
@@ -95,22 +122,29 @@ async def railway_deployment_cancel(deployment_id: str):
 @mcp.tool()
 async def railway_variables_list(service_id: str):
     """列出服务的环境变量"""
-    q = """query($id: String!) { service(id: $id) { environment { variables { edges { node { name value } } } } } }"""
-    return await gql(q, {"id": service_id})
+    pid, eid = await _service_env(service_id)
+    q = """query($projectId: String!, $environmentId: String!, $serviceId: String) {
+        variables(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId)
+    }"""
+    return await gql(q, {"projectId": pid, "environmentId": eid, "serviceId": service_id})
 
 @mcp.tool()
 async def railway_variable_set(service_id: str, name: str, value: str):
-    """设置/更新环境变量"""
-    q = """mutation($id: String!, $name: String!, $value: String!) {
-        serviceVariableUpsert(serviceId: $id, name: $name, value: $value) { name value }
+    """设置/更新单个环境变量"""
+    pid, eid = await _service_env(service_id)
+    q = """mutation($projectId: String!, $environmentId: String!, $serviceId: String, $name: String!, $value: String!) {
+        variableUpsert(input: { projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId, name: $name, value: $value })
     }"""
-    return await gql(q, {"id": service_id, "name": name, "value": value})
+    return await gql(q, {"projectId": pid, "environmentId": eid, "serviceId": service_id, "name": name, "value": value})
 
 @mcp.tool()
-async def railway_variable_delete(service_id: str, variable_id: str):
-    """删除环境变量"""
-    q = """mutation($id: String!) { serviceVariableDelete(id: $id) { id } }"""
-    return await gql(q, {"id": variable_id})
+async def railway_variable_delete(service_id: str, name: str):
+    """删除服务的一个环境变量（按变量名删除）"""
+    pid, eid = await _service_env(service_id)
+    q = """mutation($projectId: String!, $environmentId: String!, $serviceId: String, $name: String!) {
+        variableDelete(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId, name: $name)
+    }"""
+    return await gql(q, {"projectId": pid, "environmentId": eid, "serviceId": service_id, "name": name})
 
 # ─── 环境 ───
 
@@ -122,9 +156,9 @@ async def railway_environments_list(project_id: str):
 
 @mcp.tool()
 async def railway_environment_logs(environment_id: str, limit: int = 50):
-    """获取环境的日志"""
-    q = """query($id: String!, $first: Int!) {
-        environment(id: $id) { logs(first: $first) { edges { node { message timestamp } } } }
+    """获取环境的日志（跨所有服务）"""
+    q = """query($id: String!, $first: Int) {
+        environmentLogs(environmentId: $id, limit: $first) { message timestamp severity }
     }"""
     return await gql(q, {"id": environment_id, "first": limit})
 
@@ -133,15 +167,18 @@ async def railway_environment_logs(environment_id: str, limit: int = 50):
 @mcp.tool()
 async def railway_domains_list(service_id: str):
     """列出服务的域名"""
-    q = """query($id: String!) { service(id: $id) { domains { edges { node { id domain status } } } } }"""
-    return await gql(q, {"id": service_id})
+    pid, eid = await _service_env(service_id)
+    q = """query($projectId: String!, $environmentId: String!, $serviceId: String!) {
+        domains(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId)
+    }"""
+    return await gql(q, {"projectId": pid, "environmentId": eid, "serviceId": service_id})
 
 # ─── 工作区 ───
 
 @mcp.tool()
 async def railway_workspaces_list():
     """列出你的工作区"""
-    q = """{ me { workspaces { edges { node { id name } } } } }"""
+    q = """{ workspaces { id name } }"""
     return await gql(q)
 
 # ─── 查岗 ───
